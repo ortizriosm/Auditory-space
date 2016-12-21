@@ -1,0 +1,209 @@
+#!/bin/tcsh 
+
+
+# Notes:
+
+
+
+
+
+
+
+
+#------------------------------Set your directory session-------------------------------------
+
+cd /
+cd /data1/AFNI/Projects/3T_piano/Subjects/Test/new_piano_data/ramon/s1
+
+#------------------------------Set parameters for session-------------------------------------
+
+	set subj = 'ramon'
+	set session = 's1'
+	set fmat = '+orig.'
+	set nt = '180'
+	set nz = '25'
+	set TR = '2.18sec'
+	set runs = 'loc'
+	#set runs = '1 2 3 4 5 6'
+	mkdir -p prepro
+	set outdir = 'prepro'
+
+#------------------------------Run loop-------------------------------------
+
+	foreach run ( ${runs} )
+#--------------------------------Copy data---------------------------------------------------
+	rm ./prepro/${subj}.${session}.r${runs}${fmat}*
+	cp ${runs}/*${fmat}* ./prepro
+	cp ${runs}/*1D* ./prepro
+	cd ${outdir} 
+
+#--------------------------------Slice shift-------------------------------------------------
+
+		#3dTshift \
+		#-overwrite \
+		#-tzero 0 \
+		#-prefix ${subj}.${session}.r${runs}.tshift \
+		#${subj}.${session}.r${runs}+orig.
+
+#--------------------------------Look at spikes or motion------------------------------------
+
+		3dToutcount -automask ${subj}.${session}.r${runs}+orig. \
+		> ${subj}.${session}.r${runs}.outcount.1D 
+
+#--------------------------------Plot count--------------------------------------------------
+
+		1dplot ${subj}.${session}.r${runs}.outcount.1D & 
+
+		1dplot -jpgs 2000 ${subj}.${session}.r${runs}.outcount.jpg \
+		${subj}.${session}.r${runs}.outcount.1D
+
+#--------------------------------Motion correction-------------------------------------------
+
+		3dvolreg -verbose \
+		-overwrite \
+		-base ${subj}.${session}.r${runs}+orig.'[60]' \
+ 		-dfile ${subj}.${session}.r${runs}.tshift.motion.1D \
+		-quintic \
+		-twopass \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg \
+		${subj}.${session}.r${runs}+orig. 
+ 
+#--------------------------------Get derivative of motion------------------------------------
+
+		1d_tool.py -infile ${subj}.${session}.r${runs}.tshift.motion.1D'[1..6]' \
+		-set_run_lengths 180 \
+		-set_tr 10.0 \
+		-derivative \
+		-overwrite \
+		-write ${subj}.${session}.r${runs}.tshift.motion.derr.1D
+
+#--------------------------------Get censor time points--------------------------------------
+
+		1d_tool.py -infile ${subj}.${session}.r${runs}.tshift.motion.derr.1D \
+		-set_nruns 1 \
+		-set_tr 2.18 \
+		-derivative \
+		-collapse_cols euclidean_norm \
+		-moderate_mask -1.0 1.0 \
+		-show_censor_count \
+		-overwrite \
+		-write ${subj}.${session}.r${runs}.tshift.motion.derr.censor.1D
+
+#--------------------------------Plot censor time points--------------------------------------
+
+		1dplot -volreg -censor_RGB red \
+		-censor ${subj}.${session}.r${runs}.tshift.motion.derr.censor.1D \
+		-xlabel Volumes \
+		-ylabel Motion \
+		-jpgs 2000 ${subj}.${session}.r${runs}.tshift.motion.derr.censor.jpg \
+		${subj}.${session}.r${runs}.tshift.motion.derr.1D &
+
+		1dplot -volreg -censor_RGB red \
+		-censor ${subj}.${session}.r${runs}.tshift.motion.derr.censor.1D \
+		-xlabel Volumes \
+		-ylabel Motion \
+	        ${subj}.${session}.r${runs}.tshift.motion.derr.1D &
+
+#--------------------------------Spatial smoothing--------------------------------------------
+		
+		3dmerge \
+		-overwrite \
+		-1blur_fwhm 6.0 \
+		-doall \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg.6blur \
+		${subj}.${session}.r${runs}.tshift.vreg+orig
+
+##--------------------------------Brain mean--------------------------------------------------
+
+		3dTstat \
+		-overwrite \
+		-median \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg.mean \
+		${subj}.${session}.r${runs}.tshift.vreg+orig
+
+#--------------------------------Brain masking-----------------------------------------------
+ 
+		3dSkullStrip \
+		-overwrite \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg.ns \
+		-surface_coil \
+		-monkey \
+		-input ${subj}.${session}.r${runs}.tshift.vreg.mean+orig.
+
+--------------------------------Brain masking-----------------------------------------------
+ 
+		3dcalc \
+		-a ${subj}.${session}.r${runs}.tshift.vreg.ns+orig. \
+		-expr 'step(a)' \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg.mask 
+
+#--------------------------------Scale by mean-----------------------------------------------
+ 
+		3dcalc \
+		-overwrite \
+		-a ${subj}.${session}.r${runs}.tshift.vreg.6blur+orig \
+		-b ${subj}.${session}.r${runs}.tshift.vreg.mean+orig \
+		-c ${subj}.${session}.r${runs}.tshift.vreg.mask+orig \
+		-expr 'c*min(200,a/b*100)' \
+		-float \
+		-prefix ${subj}.${session}.r${runs}.tshift.vreg.6blur.scale
+
+#--------------------------------Regression--------------------------------------------------
+
+		3dDeconvolve											      \
+		-overwrite 		 									      \
+		-input ${subj}.${session}.r${runs}.tshift.vreg.6blur.scale+orig.	  		      	      \
+		-polort A 											      \
+		-censor ${subj}.${session}.r${runs}.tshift.motion.derr.censor.1D  				      \
+		-mask ${subj}.${session}.r${runs}.tshift.vreg.mask+orig.					      \
+		-local_times 											      \
+		-basis_normall 1	                                             		         	      \
+		-num_stimts 9	                                             		         		      \
+		-stim_file 1 ${subj}.${session}.r${runs}.cond1.1D 		                -stim_label 1 CS1     \
+		-stim_file 2 ${subj}.${session}.r${runs}.cond2.1D 		                -stim_label 2 CS2     \
+		-stim_file 3 ${subj}.${session}.r${runs}.cond3.1D 		                -stim_label 3 CS3     \
+		-stim_file 4 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[0]' -stim_base 4 -stim_label 4 roll   \
+		-stim_file 5 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[1]' -stim_base 5 -stim_label 5 pitch  \
+		-stim_file 6 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[2]' -stim_base 6 -stim_label 6 yaw    \
+		-stim_file 7 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[3]' -stim_base 7 -stim_label 7 is     \
+		-stim_file 8 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[4]' -stim_base 8 -stim_label 8 rl     \
+		-stim_file 9 ${subj}.${session}.r${runs}.tshift.motion.derr.1D'[5]' -stim_base 9 -stim_label 9 ap     \
+		-gltsym 'SYM: +CS1 +CS2 +CS3' 									      \
+		-glt_label 1 All_vs_base									      \
+		-float -fout -tout -x1D ${subj}.${session}.r${run}.xmat.1D -xjpeg ${subj}.r${run}.matrix.jpg          \
+		-fitts ${subj}.${session}.r${runs}.fitts							      \
+		-errts ${subj}.${session}.r${runs}.errts                           				      \
+		-bucket ${subj}.${session}.r${runs}.stats -cbucket ${subj}.r${run}.bucket
+
+#--------------------------------REML Regression---------------------------------------------
+
+		3dREMLfit \
+		-overwrite \
+		-matrix ${subj}.${session}.r${runs}.xmat.1D \
+		-input ${subj}.${session}.r${runs}.tshift.vreg.6blur.scale+orig. \
+		-mask ${subj}.${session}.r${runs}.tshift.vreg.mask+orig. \
+		-Rbeta ${subj}.${session}.r${runs}.bucket.REML \
+		-fout -tout -Rbuck ${subj}.${session}.r${runs}.stats.REML \
+		-Rvar ${subj}.${session}.r${run}.stats.REMLvar \
+		-Rfitts ${subj}.${session}.r${runs}.fitts.REML \
+		-Rerrts ${subj}.${session}.r${runs}.errts.REML -verb $*  
+
+#--------------------------------visualize data---------------------------------------------
+
+
+afni -yesplugouts -noflipm -com 'OPEN_WINDOW A geom=+4+74' \
+		-com 'OPEN_WINDOW A.axialimage geom=652x629+903+197 ifrac=0.8 mont=5x4:1:0:none' \
+		-com "SET_UNDERLAY A.${subj}.${session}.r${runs}.tshift.vreg.mean+orig. 0"\
+		-com 'SET_IJK 46 37 11' \
+		-com 'OPEN_PANEL A.Define_Overlay' \
+		-com "SET_OVERLAY A.${subj}.${session}.r${runs}.stats.REML+orig 11 11" \
+		-com 'SET_THRESHNEW A. 0.01 *p' \
+		-com 'SET_PBAR_SIGN A.+' \
+		-com 'SET_FUNC_RANGE A.4.0' \
+		-com 'SET_FUNC_VISIBLE A.+' \
+		-com 'SET_FUNC_AUTORANGE A.-' \
+		-com 'SET_PBAR_ALL A.-99 1.000000 Spectrum:yellow_to_cyan' \
+		-com 'SET_FUNC_RESAM A.Bk.Bk'\
+		-com "SAVE_JPEG A.axialimage ${subj}.${session}.r${runs}.stats.REML.ALL.jpg" 
+
+
